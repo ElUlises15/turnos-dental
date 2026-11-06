@@ -1,0 +1,25 @@
+const express = require('express');
+const { DatabaseSync } = require('node:sqlite');
+const path = require('node:path');
+const app = express();
+const db = new DatabaseSync(process.env.DB_PATH || path.join(__dirname, 'clinic.sqlite'));
+db.exec(`PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS services(id INTEGER PRIMARY KEY,name TEXT,duration INTEGER,description TEXT); CREATE TABLE IF NOT EXISTS appointments(id INTEGER PRIMARY KEY,name TEXT,phone TEXT,serviceId INTEGER,date TEXT,time TEXT,status TEXT DEFAULT 'pending'); CREATE TABLE IF NOT EXISTS blocks(id INTEGER PRIMARY KEY,date TEXT,time TEXT,reason TEXT); CREATE UNIQUE INDEX IF NOT EXISTS occupied ON appointments(date,time) WHERE status != 'cancelled'; CREATE UNIQUE INDEX IF NOT EXISTS blocked ON blocks(date,time);`);
+const seeds=[['Limpieza',30,'Un nuevo comienzo para tu sonrisa.'],['Extracción',30,'Atención cuidadosa, en cada paso.'],['Ortodoncia · consulta',30,'Conversemos sobre tu próxima sonrisa.'],['Blanqueamiento',30,'Dale más luz a tu sonrisa.']];
+if(!db.prepare('SELECT count(*) n FROM services').get().n) seeds.forEach(s=>db.prepare('INSERT INTO services(name,duration,description) VALUES(?,?,?)').run(...s));
+app.use(express.json({limit:'20kb'}));
+app.use((req,res,next)=>{res.set('X-Robots-Tag','noindex, nofollow');next()});
+app.get('/api/services',(req,res)=>res.json(db.prepare('SELECT * FROM services').all()));
+app.get('/api/appointments',(req,res)=>res.json(db.prepare('SELECT * FROM appointments ORDER BY date,time').all()));
+app.get('/api/blocks',(req,res)=>res.json(db.prepare('SELECT * FROM blocks ORDER BY date,time').all()));
+function validSlot(date,time){return /^\d{4}-\d{2}-\d{2}$/.test(date||'') && new Date(date+'T12:00:00Z').toISOString().slice(0,10)===date && date>=new Date().toISOString().slice(0,10) && /^(09|10|11|12|14|15|16|17):(00|30)$/.test(time||'') && ![0,6].includes(new Date(date+'T12:00:00Z').getUTCDay())}
+app.post('/api/appointments',(req,res)=>{const {name,phone,serviceId,date,time}=req.body;
+if(typeof name!=='string'||name.trim().length<2||name.length>100||typeof phone!=='string'||!/^\+?[\d\s()-]{7,25}$/.test(phone)||!db.prepare('SELECT id FROM services WHERE id=?').get(Number(serviceId))||!validSlot(date,time))return res.status(400).json({error:'Revisá tus datos y elegí un horario válido.'});
+if(db.prepare('SELECT id FROM blocks WHERE date=? AND time=?').get(date,time))return res.status(409).json({error:'Ese horario está bloqueado. Elegí otro.'});
+try{const r=db.prepare('INSERT INTO appointments(name,phone,serviceId,date,time) VALUES(?,?,?,?,?)').run(name.trim(),phone,Number(serviceId),date,time);res.status(201).json(db.prepare('SELECT * FROM appointments WHERE id=?').get(r.lastInsertRowid))}catch{res.status(409).json({error:'Ese horario ya está reservado. Elegí otro.'})}});
+app.patch('/api/appointments/:id',(req,res)=>{if(!['confirmed','cancelled'].includes(req.body.status))return res.status(400).json({error:'Estado inválido.'});const a=db.prepare('SELECT * FROM appointments WHERE id=?').get(req.params.id);if(!a)return res.status(404).json({error:'No encontramos el turno.'});if(a.status==='cancelled')return res.status(400).json({error:'El turno ya fue cancelado.'});db.prepare('UPDATE appointments SET status=? WHERE id=?').run(req.body.status,req.params.id);res.json({ok:true})});
+app.post('/api/blocks',(req,res)=>{const {date,time,reason='Bloqueado'}=req.body;if(!validSlot(date,time)||typeof reason!=='string'||reason.length>200)return res.status(400).json({error:'Elegí una fecha y un horario válidos.'});if(db.prepare("SELECT id FROM appointments WHERE date=? AND time=? AND status!='cancelled'").get(date,time))return res.status(409).json({error:'Ya hay un turno en ese horario.'});try{const r=db.prepare('INSERT INTO blocks(date,time,reason) VALUES(?,?,?)').run(date,time,reason);res.status(201).json({id:Number(r.lastInsertRowid),date,time,reason})}catch{res.status(409).json({error:'Ese horario ya está bloqueado.'})}});
+app.delete('/api/blocks/:id',(req,res)=>{db.prepare('DELETE FROM blocks WHERE id=?').run(req.params.id);res.json({ok:true})});
+app.use(express.static(path.join(__dirname,'../public')));
+app.use((err,req,res,next)=>res.status(400).json({error:'No pudimos procesar la solicitud.'}));
+if(require.main===module)app.listen(process.env.PORT||3848,'0.0.0.0',()=>console.log('Sonrisa Clara · http://localhost:3848'));
+module.exports={app,db};

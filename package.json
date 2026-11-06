@@ -1,0 +1,1 @@
+{"name":"sonrisa-clara","version":"1.0.0","private":true,"scripts":{"start":"node server/index.js","test":"node --test server/test.js"},"dependencies":{"express":"^4.21.2"},"devDependencies":{"@playwright/test":"^1.51.0"}}
